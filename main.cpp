@@ -29,7 +29,7 @@ struct Prompt {
     std::string content;
 };
 
-// Variabili Globali
+// Variabili Globali DirectX e Windows
 static ID3D11Device* g_pd3dDevice = nullptr;
 static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
 static IDXGISwapChain* g_pSwapChain = nullptr;
@@ -43,7 +43,10 @@ char g_searchBuf[256] = "";
 char g_bufTitle[512] = "";
 char g_bufProject[512] = "";
 char g_bufTags[512] = "";
-char g_bufContent[32768] = "";
+char g_bufContent[65536] = ""; // Buffer fino a 64KB per prompt lunghi
+
+// Modalità di Visualizzazione (0 = TXT Editor, 1 = Markdown Preview)
+int g_viewMode = 0;
 
 // Gestione Filtri
 std::string g_activeFilterType = ""; // "project" o "tag"
@@ -55,7 +58,7 @@ float g_toastTimer = 0.0f;
 
 const std::string DATA_DIR = "PromptVault_Data";
 
-// Prototipi
+// Helper Prototipi
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
 void CreateRenderTarget();
@@ -71,7 +74,6 @@ void EnsureDataFolder() {
     if (!fs::exists(DATA_DIR)) fs::create_directory(DATA_DIR);
 }
 
-// Sanifica il titolo per usarlo come nome file
 std::string SanitizeFilename(const std::string& name) {
     std::string clean = name;
     std::replace_if(clean.begin(), clean.end(), [](char c) {
@@ -81,7 +83,6 @@ std::string SanitizeFilename(const std::string& name) {
     return clean;
 }
 
-// Salva singolo prompt su disco con nome Titolo_ID.txt
 void SavePromptToDisk(const Prompt& p) {
     EnsureDataFolder();
     std::string filename = SanitizeFilename(p.title) + "_" + p.id + ".txt";
@@ -96,7 +97,6 @@ void SavePromptToDisk(const Prompt& p) {
     }
 }
 
-// Carica tutti i prompt dalla cartella
 void LoadPromptsFromDisk() {
     g_prompts.clear();
     EnsureDataFolder();
@@ -137,7 +137,6 @@ std::string EscapeJSON(const std::string& s) {
     return o.str();
 }
 
-// Esporta DB JSON
 void ExportDatabaseJSON(HWND hwnd) {
     OPENFILENAMEA ofn;
     char szFile[260] = "prompt_vault_backup.json";
@@ -151,486 +150,4 @@ void ExportDatabaseJSON(HWND hwnd) {
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
 
     if (GetSaveFileNameA(&ofn) == TRUE) {
-        std::ofstream file(ofn.lpstrFile, std::ios::binary);
-        if (file.is_open()) {
-            file << "[\n";
-            for (size_t i = 0; i < g_prompts.size(); ++i) {
-                const auto& p = g_prompts[i];
-                file << "  {\n";
-                file << "    \"id\": \"" << EscapeJSON(p.id) << "\",\n";
-                file << "    \"title\": \"" << EscapeJSON(p.title) << "\",\n";
-                file << "    \"project\": \"" << EscapeJSON(p.project) << "\",\n";
-                file << "    \"tags\": \"" << EscapeJSON(p.tags) << "\",\n";
-                file << "    \"color\": \"" << EscapeJSON(p.color) << "\",\n";
-                file << "    \"content\": \"" << EscapeJSON(p.content) << "\"\n";
-                file << "  }" << (i + 1 < g_prompts.size() ? "," : "") << "\n";
-            }
-            file << "]\n";
-            ShowToast("Database JSON Esportato!");
-        }
-    }
-}
-
-// Importa DB JSON e ricrea i file .txt
-void ImportDatabaseJSON(HWND hwnd) {
-    OPENFILENAMEA ofn;
-    char szFile[260] = {0};
-    ZeroMemory(&ofn, sizeof(ofn));
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = sizeof(szFile);
-    ofn.lpstrFilter = "JSON Files (*.json)\0*.json\0All Files (*.*)\0*.*\0";
-    ofn.nFilterIndex = 1;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-
-    if (GetOpenFileNameA(&ofn) == TRUE) {
-        std::ifstream file(ofn.lpstrFile, std::ios::binary);
-        if (file.is_open()) {
-            std::string line;
-            Prompt currentPrompt;
-            bool insidePrompt = false;
-
-            while (std::getline(file, line)) {
-                if (line.find("{") != std::string::npos) {
-                    insidePrompt = true;
-                    currentPrompt = Prompt();
-                } else if (line.find("}") != std::string::npos && insidePrompt) {
-                    if (currentPrompt.id.empty()) currentPrompt.id = std::to_string(GetTickCount64());
-                    if (currentPrompt.project.empty()) currentPrompt.project = "Senza Progetto";
-                    SavePromptToDisk(currentPrompt);
-                    insidePrompt = false;
-                } else if (insidePrompt) {
-                    auto parseKey = [&](const std::string& key) -> std::string {
-                        size_t pos = line.find("\"" + key + "\":");
-                        if (pos != std::string::npos) {
-                            size_t start = line.find("\"", pos + key.length() + 3);
-                            size_t end = line.rfind("\"");
-                            if (start != std::string::npos && end > start) {
-                                return line.substr(start + 1, end - start - 1);
-                            }
-                        }
-                        return "";
-                    };
-
-                    if (line.find("\"id\":") != std::string::npos) currentPrompt.id = parseKey("id");
-                    if (line.find("\"title\":") != std::string::npos) currentPrompt.title = parseKey("title");
-                    if (line.find("\"project\":") != std::string::npos) currentPrompt.project = parseKey("project");
-                    if (line.find("\"tags\":") != std::string::npos) currentPrompt.tags = parseKey("tags");
-                    if (line.find("\"color\":") != std::string::npos) currentPrompt.color = parseKey("color");
-                    if (line.find("\"content\":") != std::string::npos) currentPrompt.content = parseKey("content");
-                }
-            }
-            LoadPromptsFromDisk();
-            ShowToast("Database Importato e File Generati!");
-        }
-    }
-}
-
-// Esporta Singolo Prompt MD
-void ExportSinglePromptMD(const Prompt& p) {
-    std::string exportDir = "Markdown_Exports";
-    if (!fs::exists(exportDir)) fs::create_directory(exportDir);
-
-    std::string filename = SanitizeFilename(p.title);
-    std::ofstream file(exportDir + "/" + filename + ".md", std::ios::binary);
-    if (file.is_open()) {
-        file << "---\n";
-        file << "titolo: \"" << p.title << "\"\n";
-        file << "progetto: \"" << (p.project.empty() ? "Senza Progetto" : p.project) << "\"\n";
-        file << "tag: [" << p.tags << "]\n";
-        file << "colore: \"" << p.color << "\"\n";
-        file << "---\n\n";
-        file << p.content;
-        ShowToast("File MD Esportato!");
-    }
-}
-
-void ExportAllAsMarkdown() {
-    for (const auto& p : g_prompts) {
-        ExportSinglePromptMD(p);
-    }
-    ShowToast("Tutti i file .md esportati!");
-}
-
-// Colori Schede Visibili e Fissi
-ImVec4 GetCardColor(const std::string& colorName) {
-    if (colorName == "blue")    return ImVec4(0.12f, 0.25f, 0.45f, 0.85f);
-    if (colorName == "emerald") return ImVec4(0.10f, 0.35f, 0.22f, 0.85f);
-    if (colorName == "amber")   return ImVec4(0.40f, 0.30f, 0.10f, 0.85f);
-    if (colorName == "purple")  return ImVec4(0.35f, 0.15f, 0.45f, 0.85f);
-    if (colorName == "rose")    return ImVec4(0.45f, 0.15f, 0.25f, 0.85f);
-    return ImVec4(0.16f, 0.16f, 0.18f, 1.00f);
-}
-
-void SetupObsidianTheme() {
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 6.0f;
-    style.FrameRounding = 4.0f;
-    style.PopupRounding = 4.0f;
-    style.ScrollbarRounding = 4.0f;
-    style.FramePadding = ImVec2(6, 4);
-
-    ImVec4* colors = style.Colors;
-    colors[ImGuiCol_Text]                  = ImVec4(0.92f, 0.92f, 0.94f, 1.00f);
-    colors[ImGuiCol_WindowBg]              = ImVec4(0.09f, 0.09f, 0.10f, 1.00f);
-    colors[ImGuiCol_ChildBg]               = ImVec4(0.12f, 0.12f, 0.13f, 1.00f);
-    colors[ImGuiCol_Border]                = ImVec4(0.20f, 0.20f, 0.22f, 1.00f);
-    colors[ImGuiCol_FrameBg]               = ImVec4(0.15f, 0.15f, 0.16f, 1.00f);
-    colors[ImGuiCol_FrameBgHovered]        = ImVec4(0.22f, 0.22f, 0.25f, 1.00f);
-    colors[ImGuiCol_Button]                = ImVec4(0.39f, 0.40f, 0.95f, 1.00f);
-    colors[ImGuiCol_ButtonHovered]         = ImVec4(0.48f, 0.49f, 0.98f, 1.00f);
-    colors[ImGuiCol_Header]                = ImVec4(0.22f, 0.22f, 0.25f, 1.00f);
-}
-
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hInstance, nullptr, nullptr, nullptr, nullptr, L"PromptVaultClass", nullptr };
-    wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
-    wc.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
-    ::RegisterClassExW(&wc);
-
-    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Prompt Vault", WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
-
-    // BARRA DELLA FINESTRA SCURA (DARK MODE)
-    BOOL useDarkMode = TRUE;
-    DwmSetWindowAttribute(hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &useDarkMode, sizeof(useDarkMode));
-
-    // Imposta l'icona della finestra
-    HICON hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
-    SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
-    SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
-
-    if (!CreateDeviceD3D(hwnd)) {
-        CleanupDeviceD3D();
-        ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
-        return 1;
-    }
-
-    ::ShowWindow(hwnd, SW_SHOWDEFAULT);
-    ::UpdateWindow(hwnd);
-
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    SetupObsidianTheme();
-
-    ImGui_ImplWin32_Init(hwnd);
-    ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
-
-    LoadPromptsFromDisk();
-
-    bool done = false;
-    while (!done) {
-        MSG msg;
-        while (::PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE)) {
-            ::TranslateMessage(&msg);
-            ::DispatchMessage(&msg);
-            if (msg.message == WM_QUIT) done = true;
-        }
-        if (done) break;
-
-        ImGui_ImplDX11_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
-
-        ImGui::SetNextWindowPos(ImVec2(0, 0));
-        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-        ImGui::Begin("Prompt Vault Main", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
-
-        // -------------------------------------------------------------
-        // SIDEBAR PROGETTI & TAG
-        // -------------------------------------------------------------
-        ImGui::BeginChild("Sidebar", ImVec2(220, 0), true);
-        ImGui::TextColored(ImVec4(0.4f, 0.4f, 1.0f, 1.0f), "PROMPT VAULT");
-        ImGui::Separator();
-
-        if (ImGui::Button("+ Nuovo Prompt", ImVec2(-1, 30))) {
-            g_selectedPrompt = -1;
-            strcpy(g_bufTitle, "Nuovo Prompt");
-            strcpy(g_bufProject, "Senza Progetto");
-            strcpy(g_bufTags, "");
-            strcpy(g_bufContent, "");
-        }
-
-        ImGui::Spacing();
-        ImGui::TextDisabled("PROGETTI / CARTELLE");
-
-        std::vector<std::string> projects;
-        for (const auto& p : g_prompts) {
-            std::string proj = p.project.empty() ? "Senza Progetto" : p.project;
-            if (std::find(projects.begin(), projects.end(), proj) == projects.end()) {
-                projects.push_back(proj);
-            }
-        }
-
-        for (const auto& proj : projects) {
-            int count = 0;
-            for (const auto& p : g_prompts) {
-                std::string pProj = p.project.empty() ? "Senza Progetto" : p.project;
-                if (pProj == proj) count++;
-            }
-
-            std::string label = " > " + proj + " (" + std::to_string(count) + ")";
-            if (ImGui::Selectable(label.c_str(), g_activeFilterType == "project" && g_activeFilterValue == proj)) {
-                g_activeFilterType = "project";
-                g_activeFilterValue = proj;
-            }
-        }
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::TextDisabled("TAG");
-
-        std::vector<std::string> allTags;
-        for (const auto& p : g_prompts) {
-            std::stringstream ss(p.tags);
-            std::string tag;
-            while (std::getline(ss, tag, ',')) {
-                tag.erase(0, tag.find_first_not_of(" "));
-                tag.erase(tag.find_last_not_of(" ") + 1);
-                if (!tag.empty() && std::find(allTags.begin(), allTags.end(), tag) == allTags.end()) {
-                    allTags.push_back(tag);
-                }
-            }
-        }
-
-        for (const auto& tag : allTags) {
-            std::string label = "# " + tag;
-            if (ImGui::Selectable(label.c_str(), g_activeFilterType == "tag" && g_activeFilterValue == tag)) {
-                g_activeFilterType = "tag";
-                g_activeFilterValue = tag;
-            }
-        }
-
-        float availHeight = ImGui::GetContentRegionAvail().y;
-        if (availHeight > 120) {
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + availHeight - 110);
-        }
-        ImGui::Separator();
-        if (ImGui::Button("Esporta DB (.json)", ImVec2(-1, 24))) { ExportDatabaseJSON(hwnd); }
-        if (ImGui::Button("Importa DB (.json)", ImVec2(-1, 24))) { ImportDatabaseJSON(hwnd); }
-        if (ImGui::Button("Esporta Tutti .MD", ImVec2(-1, 24))) { ExportAllAsMarkdown(); }
-
-        ImGui::EndChild();
-
-        ImGui::SameLine();
-
-        // -------------------------------------------------------------
-        // LISTA PROMPT COMPATTA CON COLORE VISIBILE FISSO
-        // -------------------------------------------------------------
-        ImGui::BeginChild("ListPanel", ImVec2(280, 0), true);
-
-        ImGui::InputText("##Search", g_searchBuf, IM_ARRAYSIZE(g_searchBuf));
-
-        if (!g_activeFilterType.empty()) {
-            std::string filterLabel = "Filtro: " + g_activeFilterValue + " [X]";
-            if (ImGui::Button(filterLabel.c_str(), ImVec2(-1, 20))) {
-                g_activeFilterType = "";
-                g_activeFilterValue = "";
-            }
-        }
-
-        ImGui::Separator();
-        ImGui::TextDisabled("Prompt Salvati (%d)", (int)g_prompts.size());
-
-        for (int i = 0; i < (int)g_prompts.size(); i++) {
-            std::string searchStr = g_searchBuf;
-            std::transform(searchStr.begin(), searchStr.end(), searchStr.begin(), ::tolower);
-            std::string titleStr = g_prompts[i].title;
-            std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
-
-            std::string projStr = g_prompts[i].project.empty() ? "Senza Progetto" : g_prompts[i].project;
-
-            if (!searchStr.empty() && titleStr.find(searchStr) == std::string::npos) continue;
-            if (g_activeFilterType == "project" && projStr != g_activeFilterValue) continue;
-            if (g_activeFilterType == "tag" && g_prompts[i].tags.find(g_activeFilterValue) == std::string::npos) continue;
-
-            // SFONDO COLORE FISSO PER OGNI SCHEDA
-            ImGui::PushStyleColor(ImGuiCol_Header, GetCardColor(g_prompts[i].color));
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, GetCardColor(g_prompts[i].color));
-            
-            std::string itemLabel = g_prompts[i].title.empty() ? "Senza Titolo" : g_prompts[i].title;
-            itemLabel += "  [" + projStr + "]";
-            
-            if (ImGui::Selectable((itemLabel + "##" + std::to_string(i)).c_str(), g_selectedPrompt == i, 0, ImVec2(0, 0))) {
-                g_selectedPrompt = i;
-                strcpy(g_bufTitle, g_prompts[i].title.c_str());
-                strcpy(g_bufProject, projStr.c_str());
-                strcpy(g_bufTags, g_prompts[i].tags.c_str());
-                strcpy(g_bufContent, g_prompts[i].content.c_str());
-            }
-            ImGui::PopStyleColor(2);
-        }
-        ImGui::EndChild();
-
-        ImGui::SameLine();
-
-        // -------------------------------------------------------------
-        // EDITOR PROMPT
-        // -------------------------------------------------------------
-        ImGui::BeginChild("EditorPanel", ImVec2(0, 0), true);
-        if (g_selectedPrompt != -1 || strlen(g_bufTitle) > 0) {
-            
-            ImGui::Text("Colore Scheda:"); ImGui::SameLine();
-            if (ImGui::RadioButton("Default", g_selectedPrompt != -1 && g_prompts[g_selectedPrompt].color == "default")) { if (g_selectedPrompt != -1) g_prompts[g_selectedPrompt].color = "default"; } ImGui::SameLine();
-            if (ImGui::RadioButton("Blu", g_selectedPrompt != -1 && g_prompts[g_selectedPrompt].color == "blue")) { if (g_selectedPrompt != -1) g_prompts[g_selectedPrompt].color = "blue"; } ImGui::SameLine();
-            if (ImGui::RadioButton("Verde", g_selectedPrompt != -1 && g_prompts[g_selectedPrompt].color == "emerald")) { if (g_selectedPrompt != -1) g_prompts[g_selectedPrompt].color = "emerald"; } ImGui::SameLine();
-            if (ImGui::RadioButton("Viola", g_selectedPrompt != -1 && g_prompts[g_selectedPrompt].color == "purple")) { if (g_selectedPrompt != -1) g_prompts[g_selectedPrompt].color = "purple"; }
-
-            ImGui::Separator();
-
-            ImGui::InputText("Titolo", g_bufTitle, IM_ARRAYSIZE(g_bufTitle));
-            ImGui::InputText("Progetto / Cartella", g_bufProject, IM_ARRAYSIZE(g_bufProject));
-            ImGui::InputText("Tag (separati da virgola)", g_bufTags, IM_ARRAYSIZE(g_bufTags));
-
-            ImGui::Separator();
-            ImGui::Text("Testo del Prompt:");
-            ImGui::InputTextMultiline("##Content", g_bufContent, IM_ARRAYSIZE(g_bufContent), ImVec2(-1, -50));
-
-            if (ImGui::Button("Salva", ImVec2(70, 32))) {
-                Prompt p;
-                if (g_selectedPrompt == -1) {
-                    p.id = std::to_string(GetTickCount64());
-                    p.color = "default";
-                } else {
-                    p.id = g_prompts[g_selectedPrompt].id;
-                    p.color = g_prompts[g_selectedPrompt].color;
-                }
-                p.title = g_bufTitle;
-                p.project = strlen(g_bufProject) == 0 ? "Senza Progetto" : g_bufProject;
-                p.tags = g_bufTags;
-                p.content = g_bufContent;
-
-                SavePromptToDisk(p);
-                LoadPromptsFromDisk();
-                ShowToast("Salvato!");
-            }
-
-            ImGui::SameLine();
-            if (ImGui::Button("Copia", ImVec2(70, 32))) {
-                ImGui::SetClipboardText(g_bufContent);
-                ShowToast("Copiato!");
-            }
-
-            ImGui::SameLine();
-            if (ImGui::Button("Esporta MD", ImVec2(100, 32))) {
-                Prompt p;
-                p.title = g_bufTitle;
-                p.project = strlen(g_bufProject) == 0 ? "Senza Progetto" : g_bufProject;
-                p.tags = g_bufTags;
-                p.content = g_bufContent;
-                p.color = (g_selectedPrompt != -1) ? g_prompts[g_selectedPrompt].color : "default";
-                ExportSinglePromptMD(p);
-            }
-
-            if (g_selectedPrompt != -1) {
-                ImGui::SameLine();
-                if (ImGui::Button("Elimina", ImVec2(80, 32))) {
-                    std::string filename = SanitizeFilename(g_prompts[g_selectedPrompt].title) + "_" + g_prompts[g_selectedPrompt].id + ".txt";
-                    fs::remove(DATA_DIR + "/" + filename);
-                    g_prompts.erase(g_prompts.begin() + g_selectedPrompt);
-                    g_selectedPrompt = -1;
-                    strcpy(g_bufTitle, "");
-                    strcpy(g_bufProject, "");
-                    strcpy(g_bufTags, "");
-                    strcpy(g_bufContent, "");
-                    ShowToast("Eliminato.");
-                }
-            }
-        } else {
-            ImGui::TextDisabled("Seleziona un prompt a sinistra oppure creane uno nuovo.");
-        }
-        ImGui::EndChild();
-
-        // Toast
-        if (g_toastTimer > 0.0f) {
-            g_toastTimer -= ImGui::GetIO().DeltaTime;
-            ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 220, ImGui::GetIO().DisplaySize.y - 50));
-            ImGui::SetNextWindowSize(ImVec2(200, 35));
-            ImGui::Begin("Toast", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", g_toastMessage.c_str());
-            ImGui::End();
-        }
-
-        ImGui::End();
-
-        // Rendering
-        ImGui::Render();
-        const float clear_color[4] = { 0.09f, 0.09f, 0.10f, 1.00f };
-        g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
-        g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        g_pSwapChain->Present(1, 0);
-    }
-
-    ImGui_ImplDX11_Shutdown();
-    ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext();
-
-    CleanupDeviceD3D();
-    ::DestroyWindow(hwnd);
-    ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
-
-    return 0;
-}
-
-bool CreateDeviceD3D(HWND hWnd) {
-    DXGI_SWAP_CHAIN_DESC sd;
-    ZeroMemory(&sd, sizeof(sd));
-    sd.BufferCount = 2;
-    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    sd.BufferDesc.RefreshRate.Numerator = 60;
-    sd.BufferDesc.RefreshRate.Denominator = 1;
-    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    sd.OutputWindow = hWnd;
-    sd.SampleDesc.Count = 1;
-    sd.Windowed = TRUE;
-    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-    UINT createDeviceFlags = 0;
-    D3D_FEATURE_LEVEL featureLevel;
-    const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0 };
-    HRESULT res = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, createDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
-    if (res == DXGI_ERROR_UNSUPPORTED)
-        res = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, createDeviceFlags, featureLevelArray, 2, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &featureLevel, &g_pd3dDeviceContext);
-    if (res != S_OK) return false;
-
-    CreateRenderTarget();
-    return true;
-}
-
-void CleanupDeviceD3D() {
-    CleanupRenderTarget();
-    if (g_pSwapChain) { g_pSwapChain->Release(); g_pSwapChain = nullptr; }
-    if (g_pd3dDeviceContext) { g_pd3dDeviceContext->Release(); g_pd3dDeviceContext = nullptr; }
-    if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = nullptr; }
-}
-
-void CreateRenderTarget() {
-    ID3D11Texture2D* pBackBuffer;
-    g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
-    g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_mainRenderTargetView);
-    pBackBuffer->Release();
-}
-
-void CleanupRenderTarget() {
-    if (g_mainRenderTargetView) { g_mainRenderTargetView->Release(); g_mainRenderTargetView = nullptr; }
-}
-
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) return true;
-    switch (msg) {
-    case WM_SIZE:
-        if (g_pd3dDevice != nullptr && wParam != SIZE_MINIMIZED) {
-            CleanupRenderTarget();
-            g_pSwapChain->ResizeBuffers(0, (UINT)LOWORD(lParam), (UINT)HIWORD(lParam), DXGI_FORMAT_UNKNOWN, 0);
-            CreateRenderTarget();
-        }
-        return 0;
-    case WM_DESTROY:
-        ::PostQuitMessage(0);
-        return 0;
-    }
-    return ::DefWindowProcW(hWnd, msg, wParam, lParam);
-}
+        std::ofstream file(ofn.lpstrFile, std
