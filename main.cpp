@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <dwmapi.h>
 #include <d3d11.h>
 #include <tchar.h>
 #include <string>
@@ -14,6 +15,8 @@
 #include "imgui_impl_dx11.h"
 #include "resource.h"
 
+#pragma comment(lib, "dwmapi.lib")
+
 namespace fs = std::filesystem;
 
 // Struttura Dati Prompt
@@ -26,7 +29,7 @@ struct Prompt {
     std::string content;
 };
 
-// Variabili Globali DirectX e Windows
+// Variabili Globali
 static ID3D11Device* g_pd3dDevice = nullptr;
 static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
 static IDXGISwapChain* g_pSwapChain = nullptr;
@@ -34,25 +37,25 @@ static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
 
 std::vector<Prompt> g_prompts;
 int g_selectedPrompt = -1;
-char g_searchBuf[128] = "";
+char g_searchBuf[256] = "";
 
 // Buffer Editor
-char g_bufTitle[256] = "";
-char g_bufProject[256] = "";
-char g_bufTags[256] = "";
-char g_bufContent[16384] = "";
+char g_bufTitle[512] = "";
+char g_bufProject[512] = "";
+char g_bufTags[512] = "";
+char g_bufContent[32768] = "";
 
 // Gestione Filtri
 std::string g_activeFilterType = ""; // "project" o "tag"
 std::string g_activeFilterValue = "";
 
-// Notifiche Toast
+// Toast
 std::string g_toastMessage = "";
 float g_toastTimer = 0.0f;
 
 const std::string DATA_DIR = "PromptVault_Data";
 
-// Helper Prototipi
+// Prototipi
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
 void CreateRenderTarget();
@@ -68,32 +71,47 @@ void EnsureDataFolder() {
     if (!fs::exists(DATA_DIR)) fs::create_directory(DATA_DIR);
 }
 
+// Sanifica il titolo per usarlo come nome file
+std::string SanitizeFilename(const std::string& name) {
+    std::string clean = name;
+    std::replace_if(clean.begin(), clean.end(), [](char c) {
+        return c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|';
+    }, '_');
+    if (clean.empty()) clean = "prompt";
+    return clean;
+}
+
+// Salva singolo prompt su disco con nome Titolo_ID.txt
 void SavePromptToDisk(const Prompt& p) {
     EnsureDataFolder();
-    std::ofstream file(DATA_DIR + "/" + p.id + ".txt");
+    std::string filename = SanitizeFilename(p.title) + "_" + p.id + ".txt";
+    std::ofstream file(DATA_DIR + "/" + filename, std::ios::binary);
     if (file.is_open()) {
-        file << p.title << "\n" 
-             << p.project << "\n" 
+        file << p.id << "\n"
+             << p.title << "\n" 
+             << (p.project.empty() ? "Senza Progetto" : p.project) << "\n" 
              << p.tags << "\n" 
              << p.color << "\n" 
              << p.content;
     }
 }
 
+// Carica tutti i prompt dalla cartella
 void LoadPromptsFromDisk() {
     g_prompts.clear();
     EnsureDataFolder();
     for (const auto& entry : fs::directory_iterator(DATA_DIR)) {
         if (entry.path().extension() == ".txt") {
-            std::ifstream file(entry.path());
+            std::ifstream file(entry.path(), std::ios::binary);
             if (file.is_open()) {
                 Prompt p;
-                p.id = entry.path().stem().string();
+                std::getline(file, p.id);
                 std::getline(file, p.title);
                 std::getline(file, p.project);
                 std::getline(file, p.tags);
                 std::getline(file, p.color);
                 if (p.color.empty()) p.color = "default";
+                if (p.project.empty()) p.project = "Senza Progetto";
 
                 std::string line, content;
                 while (std::getline(file, line)) content += line + "\n";
@@ -104,30 +122,22 @@ void LoadPromptsFromDisk() {
     }
 }
 
-// Funzione Helper di Escape per JSON manuale
 std::string EscapeJSON(const std::string& s) {
     std::ostringstream o;
     for (char c : s) {
         switch (c) {
             case '"': o << "\\\""; break;
             case '\\': o << "\\\\"; break;
-            case '\b': o << "\\b"; break;
-            case '\f': o << "\\f"; break;
             case '\n': o << "\\n"; break;
             case '\r': o << "\\r"; break;
             case '\t': o << "\\t"; break;
-            default:
-                if ('\x00' <= c && c <= '\x1f') {
-                    o << "\\u" << std::hex << (int)c;
-                } else {
-                    o << c;
-                }
+            default: o << c;
         }
     }
     return o.str();
 }
 
-// Esporta Database JSON
+// Esporta DB JSON
 void ExportDatabaseJSON(HWND hwnd) {
     OPENFILENAMEA ofn;
     char szFile[260] = "prompt_vault_backup.json";
@@ -141,7 +151,7 @@ void ExportDatabaseJSON(HWND hwnd) {
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
 
     if (GetSaveFileNameA(&ofn) == TRUE) {
-        std::ofstream file(ofn.lpstrFile);
+        std::ofstream file(ofn.lpstrFile, std::ios::binary);
         if (file.is_open()) {
             file << "[\n";
             for (size_t i = 0; i < g_prompts.size(); ++i) {
@@ -156,12 +166,12 @@ void ExportDatabaseJSON(HWND hwnd) {
                 file << "  }" << (i + 1 < g_prompts.size() ? "," : "") << "\n";
             }
             file << "]\n";
-            ShowToast("Database JSON esportato!");
+            ShowToast("Database JSON Esportato!");
         }
     }
 }
 
-// Importa Database JSON
+// Importa DB JSON e ricrea i file .txt
 void ImportDatabaseJSON(HWND hwnd) {
     OPENFILENAMEA ofn;
     char szFile[260] = {0};
@@ -175,57 +185,82 @@ void ImportDatabaseJSON(HWND hwnd) {
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
 
     if (GetOpenFileNameA(&ofn) == TRUE) {
-        std::ifstream file(ofn.lpstrFile);
+        std::ifstream file(ofn.lpstrFile, std::ios::binary);
         if (file.is_open()) {
-            std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-            // Parsing semplice riga per riga / chiavi
-            ShowToast("Importazione completata!");
+            std::string line;
+            Prompt currentPrompt;
+            bool insidePrompt = false;
+
+            while (std::getline(file, line)) {
+                if (line.find("{") != std::string::npos) {
+                    insidePrompt = true;
+                    currentPrompt = Prompt();
+                } else if (line.find("}") != std::string::npos && insidePrompt) {
+                    if (currentPrompt.id.empty()) currentPrompt.id = std::to_string(GetTickCount64());
+                    if (currentPrompt.project.empty()) currentPrompt.project = "Senza Progetto";
+                    SavePromptToDisk(currentPrompt);
+                    insidePrompt = false;
+                } else if (insidePrompt) {
+                    auto parseKey = [&](const std::string& key) -> std::string {
+                        size_t pos = line.find("\"" + key + "\":");
+                        if (pos != std::string::npos) {
+                            size_t start = line.find("\"", pos + key.length() + 3);
+                            size_t end = line.rfind("\"");
+                            if (start != std::string::npos && end > start) {
+                                return line.substr(start + 1, end - start - 1);
+                            }
+                        }
+                        return "";
+                    };
+
+                    if (line.find("\"id\":") != std::string::npos) currentPrompt.id = parseKey("id");
+                    if (line.find("\"title\":") != std::string::npos) currentPrompt.title = parseKey("title");
+                    if (line.find("\"project\":") != std::string::npos) currentPrompt.project = parseKey("project");
+                    if (line.find("\"tags\":") != std::string::npos) currentPrompt.tags = parseKey("tags");
+                    if (line.find("\"color\":") != std::string::npos) currentPrompt.color = parseKey("color");
+                    if (line.find("\"content\":") != std::string::npos) currentPrompt.content = parseKey("content");
+                }
+            }
             LoadPromptsFromDisk();
+            ShowToast("Database Importato e File Generati!");
         }
     }
 }
 
-// Esporta Singolo Prompt in Markdown
+// Esporta Singolo Prompt MD
 void ExportSinglePromptMD(const Prompt& p) {
     std::string exportDir = "Markdown_Exports";
     if (!fs::exists(exportDir)) fs::create_directory(exportDir);
 
-    std::string filename = p.title;
-    std::replace_if(filename.begin(), filename.end(), [](char c){ return !isalnum(c); }, '_');
-    if (filename.empty()) filename = "prompt";
-
-    std::ofstream file(exportDir + "/" + filename + ".md");
+    std::string filename = SanitizeFilename(p.title);
+    std::ofstream file(exportDir + "/" + filename + ".md", std::ios::binary);
     if (file.is_open()) {
         file << "---\n";
         file << "titolo: \"" << p.title << "\"\n";
-        file << "progetto: \"" << p.project << "\"\n";
+        file << "progetto: \"" << (p.project.empty() ? "Senza Progetto" : p.project) << "\"\n";
         file << "tag: [" << p.tags << "]\n";
         file << "colore: \"" << p.color << "\"\n";
         file << "---\n\n";
         file << p.content;
-        ShowToast("Prompt salvato in 'Markdown_Exports'!");
+        ShowToast("File MD Esportato!");
     }
 }
 
-// Esporta Tutti i Prompt in Markdown
 void ExportAllAsMarkdown() {
-    std::string exportDir = "Markdown_Exports";
-    if (!fs::exists(exportDir)) fs::create_directory(exportDir);
-
     for (const auto& p : g_prompts) {
         ExportSinglePromptMD(p);
     }
     ShowToast("Tutti i file .md esportati!");
 }
 
-// Colori Schede
+// Colori Schede Visibili e Fissi
 ImVec4 GetCardColor(const std::string& colorName) {
-    if (colorName == "blue")    return ImVec4(0.10f, 0.20f, 0.40f, 0.60f);
-    if (colorName == "emerald") return ImVec4(0.08f, 0.30f, 0.20f, 0.60f);
-    if (colorName == "amber")   return ImVec4(0.35f, 0.25f, 0.08f, 0.60f);
-    if (colorName == "purple")  return ImVec4(0.30f, 0.12f, 0.40f, 0.60f);
-    if (colorName == "rose")    return ImVec4(0.40f, 0.12f, 0.20f, 0.60f);
-    return ImVec4(0.15f, 0.15f, 0.16f, 1.00f);
+    if (colorName == "blue")    return ImVec4(0.12f, 0.25f, 0.45f, 0.85f);
+    if (colorName == "emerald") return ImVec4(0.10f, 0.35f, 0.22f, 0.85f);
+    if (colorName == "amber")   return ImVec4(0.40f, 0.30f, 0.10f, 0.85f);
+    if (colorName == "purple")  return ImVec4(0.35f, 0.15f, 0.45f, 0.85f);
+    if (colorName == "rose")    return ImVec4(0.45f, 0.15f, 0.25f, 0.85f);
+    return ImVec4(0.16f, 0.16f, 0.18f, 1.00f);
 }
 
 void SetupObsidianTheme() {
@@ -246,7 +281,6 @@ void SetupObsidianTheme() {
     colors[ImGuiCol_Button]                = ImVec4(0.39f, 0.40f, 0.95f, 1.00f);
     colors[ImGuiCol_ButtonHovered]         = ImVec4(0.48f, 0.49f, 0.98f, 1.00f);
     colors[ImGuiCol_Header]                = ImVec4(0.22f, 0.22f, 0.25f, 1.00f);
-    colors[ImGuiCol_HeaderHovered]         = ImVec4(0.28f, 0.28f, 0.32f, 1.00f);
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
@@ -257,6 +291,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Prompt Vault", WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
 
+    // BARRA DELLA FINESTRA SCURA (DARK MODE)
+    BOOL useDarkMode = TRUE;
+    DwmSetWindowAttribute(hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &useDarkMode, sizeof(useDarkMode));
+
+    // Imposta l'icona della finestra
     HICON hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
     SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
     SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
@@ -298,7 +337,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         ImGui::Begin("Prompt Vault Main", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
         // -------------------------------------------------------------
-        // COLONNA 1: SIDEBAR PROGETTI, TAG E IMPORT/EXPORT DATABASE
+        // SIDEBAR PROGETTI & TAG
         // -------------------------------------------------------------
         ImGui::BeginChild("Sidebar", ImVec2(220, 0), true);
         ImGui::TextColored(ImVec4(0.4f, 0.4f, 1.0f, 1.0f), "PROMPT VAULT");
@@ -307,7 +346,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (ImGui::Button("+ Nuovo Prompt", ImVec2(-1, 30))) {
             g_selectedPrompt = -1;
             strcpy(g_bufTitle, "Nuovo Prompt");
-            strcpy(g_bufProject, "");
+            strcpy(g_bufProject, "Senza Progetto");
             strcpy(g_bufTags, "");
             strcpy(g_bufContent, "");
         }
@@ -317,14 +356,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
         std::vector<std::string> projects;
         for (const auto& p : g_prompts) {
-            if (!p.project.empty() && std::find(projects.begin(), projects.end(), p.project) == projects.end()) {
-                projects.push_back(p.project);
+            std::string proj = p.project.empty() ? "Senza Progetto" : p.project;
+            if (std::find(projects.begin(), projects.end(), proj) == projects.end()) {
+                projects.push_back(proj);
             }
         }
 
         for (const auto& proj : projects) {
             int count = 0;
-            for (const auto& p : g_prompts) if (p.project == proj) count++;
+            for (const auto& p : g_prompts) {
+                std::string pProj = p.project.empty() ? "Senza Progetto" : p.project;
+                if (pProj == proj) count++;
+            }
 
             std::string label = " > " + proj + " (" + std::to_string(count) + ")";
             if (ImGui::Selectable(label.c_str(), g_activeFilterType == "project" && g_activeFilterValue == proj)) {
@@ -358,28 +401,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
         }
 
-        // Tasti Importa/Esporta Database SO PRA al tasto Esporta File .MD
         float availHeight = ImGui::GetContentRegionAvail().y;
         if (availHeight > 120) {
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + availHeight - 110);
         }
         ImGui::Separator();
-        if (ImGui::Button("Esporta DB (.json)", ImVec2(-1, 24))) {
-            ExportDatabaseJSON(hwnd);
-        }
-        if (ImGui::Button("Importa DB (.json)", ImVec2(-1, 24))) {
-            ImportDatabaseJSON(hwnd);
-        }
-        if (ImGui::Button("Esporta File .MD", ImVec2(-1, 24))) {
-            ExportAllAsMarkdown();
-        }
+        if (ImGui::Button("Esporta DB (.json)", ImVec2(-1, 24))) { ExportDatabaseJSON(hwnd); }
+        if (ImGui::Button("Importa DB (.json)", ImVec2(-1, 24))) { ImportDatabaseJSON(hwnd); }
+        if (ImGui::Button("Esporta Tutti .MD", ImVec2(-1, 24))) { ExportAllAsMarkdown(); }
 
         ImGui::EndChild();
 
         ImGui::SameLine();
 
         // -------------------------------------------------------------
-        // COLONNA 2: LISTA PROMPT COMPATTA (COMPACT RECTANGLE)
+        // LISTA PROMPT COMPATTA CON COLORE VISIBILE FISSO
         // -------------------------------------------------------------
         ImGui::BeginChild("ListPanel", ImVec2(280, 0), true);
 
@@ -402,33 +438,34 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             std::string titleStr = g_prompts[i].title;
             std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
 
+            std::string projStr = g_prompts[i].project.empty() ? "Senza Progetto" : g_prompts[i].project;
+
             if (!searchStr.empty() && titleStr.find(searchStr) == std::string::npos) continue;
-            if (g_activeFilterType == "project" && g_prompts[i].project != g_activeFilterValue) continue;
+            if (g_activeFilterType == "project" && projStr != g_activeFilterValue) continue;
             if (g_activeFilterType == "tag" && g_prompts[i].tags.find(g_activeFilterValue) == std::string::npos) continue;
 
+            // SFONDO COLORE FISSO PER OGNI SCHEDA
             ImGui::PushStyleColor(ImGuiCol_Header, GetCardColor(g_prompts[i].color));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, GetCardColor(g_prompts[i].color));
             
-            // Riquadro compatto adattato alle dimensioni del testo
             std::string itemLabel = g_prompts[i].title.empty() ? "Senza Titolo" : g_prompts[i].title;
-            if (!g_prompts[i].project.empty()) {
-                itemLabel += "  (" + g_prompts[i].project + ")";
-            }
+            itemLabel += "  [" + projStr + "]";
             
             if (ImGui::Selectable((itemLabel + "##" + std::to_string(i)).c_str(), g_selectedPrompt == i, 0, ImVec2(0, 0))) {
                 g_selectedPrompt = i;
                 strcpy(g_bufTitle, g_prompts[i].title.c_str());
-                strcpy(g_bufProject, g_prompts[i].project.c_str());
+                strcpy(g_bufProject, projStr.c_str());
                 strcpy(g_bufTags, g_prompts[i].tags.c_str());
                 strcpy(g_bufContent, g_prompts[i].content.c_str());
             }
-            ImGui::PopStyleColor();
+            ImGui::PopStyleColor(2);
         }
         ImGui::EndChild();
 
         ImGui::SameLine();
 
         // -------------------------------------------------------------
-        // COLONNA 3: EDITOR CON TASTO COPIA E ESPORTA MD SINGOLO
+        // EDITOR PROMPT
         // -------------------------------------------------------------
         ImGui::BeginChild("EditorPanel", ImVec2(0, 0), true);
         if (g_selectedPrompt != -1 || strlen(g_bufTitle) > 0) {
@@ -449,7 +486,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             ImGui::Text("Testo del Prompt:");
             ImGui::InputTextMultiline("##Content", g_bufContent, IM_ARRAYSIZE(g_bufContent), ImVec2(-1, -50));
 
-            // BOTTONI DI AZIONE NOTA
             if (ImGui::Button("Salva", ImVec2(70, 32))) {
                 Prompt p;
                 if (g_selectedPrompt == -1) {
@@ -460,7 +496,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                     p.color = g_prompts[g_selectedPrompt].color;
                 }
                 p.title = g_bufTitle;
-                p.project = g_bufProject;
+                p.project = strlen(g_bufProject) == 0 ? "Senza Progetto" : g_bufProject;
                 p.tags = g_bufTags;
                 p.content = g_bufContent;
 
@@ -470,16 +506,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             }
 
             ImGui::SameLine();
-            if (ImGui::Button("Copia", ImVec2(70, 32))) { // Tasto Copia ridotto
+            if (ImGui::Button("Copia", ImVec2(70, 32))) {
                 ImGui::SetClipboardText(g_bufContent);
                 ShowToast("Copiato!");
             }
 
             ImGui::SameLine();
-            if (ImGui::Button("Esporta MD", ImVec2(100, 32))) { // Tasto Esporta MD Singolo
+            if (ImGui::Button("Esporta MD", ImVec2(100, 32))) {
                 Prompt p;
                 p.title = g_bufTitle;
-                p.project = g_bufProject;
+                p.project = strlen(g_bufProject) == 0 ? "Senza Progetto" : g_bufProject;
                 p.tags = g_bufTags;
                 p.content = g_bufContent;
                 p.color = (g_selectedPrompt != -1) ? g_prompts[g_selectedPrompt].color : "default";
@@ -489,8 +525,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             if (g_selectedPrompt != -1) {
                 ImGui::SameLine();
                 if (ImGui::Button("Elimina", ImVec2(80, 32))) {
-                    std::string filePath = DATA_DIR + "/" + g_prompts[g_selectedPrompt].id + ".txt";
-                    fs::remove(filePath);
+                    std::string filename = SanitizeFilename(g_prompts[g_selectedPrompt].title) + "_" + g_prompts[g_selectedPrompt].id + ".txt";
+                    fs::remove(DATA_DIR + "/" + filename);
                     g_prompts.erase(g_prompts.begin() + g_selectedPrompt);
                     g_selectedPrompt = -1;
                     strcpy(g_bufTitle, "");
@@ -537,7 +573,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     return 0;
 }
 
-// Inizializzazione DirectX11
 bool CreateDeviceD3D(HWND hWnd) {
     DXGI_SWAP_CHAIN_DESC sd;
     ZeroMemory(&sd, sizeof(sd));
