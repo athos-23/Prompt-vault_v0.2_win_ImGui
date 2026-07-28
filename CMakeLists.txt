@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
-project(PromptVault CXX)
+project(PromptVault CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 
-# Scarica ImGui automaticamente durante la build
+# Scarica ImGui automaticamente
 include(FetchContent)
 FetchContent_Declare(
     imgui
@@ -12,7 +12,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(imgui)
 
-# Aggiungi i file sorgente di ImGui necessari per Windows + DirectX11
 set(IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -22,11 +21,15 @@ set(IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp
 )
 
-add_executable(PromptVault WIN32 main.cpp ${IMGUI_SOURCES})
+# Compilazione risorsa Icona per l'eseguibile Windows .exe
+enable_language(RC)
+set(CMAKE_RC_COMPILER_INIT rc)
+
+add_executable(PromptVault WIN32 main.cpp app.rc ${IMGUI_SOURCES})
 
 target_include_directories(PromptVault PRIVATE 
     ${imgui_SOURCE_DIR} 
     ${imgui_SOURCE_DIR}/backends
 )
 
-target_link_libraries(PromptVault PRIVATE d3d11 d3dcompiler)
+target_link_libraries(PromptVault PRIVATE d3d11 d3dcompiler comdlg32 dwmapi)
