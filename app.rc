@@ -1,3 +1,6 @@
 #include "resource.h"
 
+// Icona principale per l'eseguibile Windows .exe
+IDI_APP_ICON ICON "app_icon.ico"#include "resource.h"
+
 IDI_APP_ICON ICON "app_icon.ico"
