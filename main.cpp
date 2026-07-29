@@ -619,7 +619,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             if (contentHeight < 100) contentHeight = 100;
 
             if (g_viewMode == 0) {
-                // CORRETTO: flag valido per ImGui
+                // Impostiamo ImVec2(-1, contentHeight) per far occupare l'intera larghezza visibile del pannello
                 ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput;
                 ImGui::InputTextMultiline("##Content", g_bufContent, IM_ARRAYSIZE(g_bufContent), ImVec2(-1, contentHeight), flags);
                 ShowContextMenuForBuffer(g_bufContent, IM_ARRAYSIZE(g_bufContent));
