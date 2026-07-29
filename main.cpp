@@ -133,7 +133,6 @@ void DeleteProjectFolder(const std::string& projName) {
         }
     }
     
-    // Rimuovi dal vettore partendo dal fondo per non sfasare gli indici
     for (int i = (int)toDelete.size() - 1; i >= 0; --i) {
         g_prompts.erase(g_prompts.begin() + toDelete[i]);
     }
@@ -461,13 +460,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             std::string label = proj + " (" + std::to_string(count) + ")";
             
-            // Pulsante Selezione Progetto
             if (ImGui::Selectable(label.c_str(), g_activeFilterType == "project" && g_activeFilterValue == proj, 0, ImVec2(150, 0))) {
                 g_activeFilterType = "project";
                 g_activeFilterValue = proj;
             }
 
-            // Tasto Elimina Progetto Intero (Tranne Senza Progetto)
             if (proj != "Senza Progetto") {
                 ImGui::SameLine(185);
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.15f, 0.15f, 0.8f));
@@ -573,12 +570,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         ImGui::BeginChild("EditorPanel", ImVec2(0, 0), true);
         if (g_selectedPrompt != -1 || strlen(g_bufTitle) > 0) {
             
-            // SELETTORE MODALITA TXT / MARKDOWN
             if (ImGui::RadioButton("[TXT] Editor", g_viewMode == 0)) g_viewMode = 0;
             ImGui::SameLine();
             if (ImGui::RadioButton("[MD] Anteprima", g_viewMode == 1)) g_viewMode = 1;
 
-            // SELETTORE COLORI COMPLETO (INCLUSO VIOLA, ROSA, AMBRA)
             ImGui::SameLine();
             ImGui::Text(" | Colore:"); ImGui::SameLine();
             
@@ -600,7 +595,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             ImGui::Separator();
 
-            // CAMPI DI TESTO ETICHETTATI E BEN STRUTTURATI
             ImGui::Text("Titolo:");
             ImGui::SameLine(90);
             ImGui::SetNextItemWidth(-1);
@@ -621,12 +615,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             ImGui::Separator();
 
-            // AREA EDITABILE CON ALTEZZA DINAMICA CALCOLATA PER NON FONDERSI
-            float contentHeight = ImGui::GetContentRegionAvail().y - 40; // Spazio dinamico rimanente
+            float contentHeight = ImGui::GetContentRegionAvail().y - 40;
             if (contentHeight < 100) contentHeight = 100;
 
             if (g_viewMode == 0) {
-                ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput;
+                // MODIFICA QUI: Aggiunto ImGuiInputTextFlags_WordWrap per mandare il testo a capo automaticamente
+                ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap;
                 ImGui::InputTextMultiline("##Content", g_bufContent, IM_ARRAYSIZE(g_bufContent), ImVec2(-1, contentHeight), flags);
                 ShowContextMenuForBuffer(g_bufContent, IM_ARRAYSIZE(g_bufContent));
             } else {
@@ -635,7 +629,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             ImGui::Spacing();
 
-            // BARRA PULSANTI DI AZIONE
             if (ImGui::Button("Salva", ImVec2(80, 28))) {
                 Prompt p;
                 if (g_selectedPrompt == -1) {
@@ -694,7 +687,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
         ImGui::EndChild();
 
-        // Notifica Toast
         if (g_toastTimer > 0.0f) {
             g_toastTimer -= ImGui::GetIO().DeltaTime;
             ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 220, ImGui::GetIO().DisplaySize.y - 45));
