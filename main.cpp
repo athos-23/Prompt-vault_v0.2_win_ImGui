@@ -619,8 +619,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             if (contentHeight < 100) contentHeight = 100;
 
             if (g_viewMode == 0) {
-                // MODIFICA QUI: Aggiunto ImGuiInputTextFlags_WordWrap per mandare il testo a capo automaticamente
-                ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap;
+                // CORRETTO: flag valido per ImGui
+                ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput;
                 ImGui::InputTextMultiline("##Content", g_bufContent, IM_ARRAYSIZE(g_bufContent), ImVec2(-1, contentHeight), flags);
                 ShowContextMenuForBuffer(g_bufContent, IM_ARRAYSIZE(g_bufContent));
             } else {
